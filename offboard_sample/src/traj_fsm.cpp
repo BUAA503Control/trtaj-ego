@@ -2,7 +2,7 @@
  * @Author: xindong324
  * @Date: 2022-03-03 21:57:53
  * @LastEditors: xindong324
- * @LastEditTime: 2022-03-19 17:26:46
+ * @LastEditTime: 2022-05-20 12:06:03
  * @Description: file content
  */
 #include "offboard_sample/traj_fsm.h"
@@ -24,6 +24,8 @@ void TrajFSM::init(ros::NodeHandle &nh) {
     nh.param("offb_fsm/target_z", target_pos_.position.z, 2.0);
     nh.param("offb_fsm/target_yaw", target_yaw_, 0.0);
 
+    ROS_INFO("TEST");
+
     trigger_ = false;
     start_mission_ = false;
     flag_emergency_stop_ = false;
@@ -39,6 +41,7 @@ void TrajFSM::init(ros::NodeHandle &nh) {
     local_velocity_sub_ = nh.subscribe("/mavros/local_position/velocity_local", 10, &TrajFSM::localVelocityCallback, this);
     
     state_sub_ = nh.subscribe("/mavros/state", 10, &TrajFSM::stateCallback, this);
+    extent_state_sub_ = nh.subscribe("/mavros/extended_state", 10, &TrajFSM::extendedStateCallback, this);
     joy_sub_ = nh.subscribe("/keys", 10, &TrajFSM::joyCallback, this);
     quad_cmd_sub_ = nh.subscribe("/planning/pos_cmd", 10, &TrajFSM::quadCmdCallback, this);
 
@@ -61,13 +64,13 @@ void TrajFSM::init(ros::NodeHandle &nh) {
     att_raw_.type_mask = 0b00000111;
 
     local_raw_.coordinate_frame = mavros_msgs::PositionTarget::FRAME_LOCAL_NED;
-    local_raw_.type_mask = mavros_msgs::PositionTarget::IGNORE_VX | 
-                              mavros_msgs::PositionTarget::IGNORE_VY |
-                              mavros_msgs::PositionTarget::IGNORE_VZ |
-                              mavros_msgs::PositionTarget::IGNORE_AFX |
-                              mavros_msgs::PositionTarget::IGNORE_AFY |
-                              mavros_msgs::PositionTarget::IGNORE_AFZ |
-                              mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
+    // local_raw_.type_mask = mavros_msgs::PositionTarget::IGNORE_VX | 
+    //                           mavros_msgs::PositionTarget::IGNORE_VY |
+    //                           mavros_msgs::PositionTarget::IGNORE_VZ |
+    //                           mavros_msgs::PositionTarget::IGNORE_AFX |
+    //                           mavros_msgs::PositionTarget::IGNORE_AFY |
+    //                           mavros_msgs::PositionTarget::IGNORE_AFZ |
+    //                           mavros_msgs::PositionTarget::IGNORE_YAW_RATE;
 
     ros::Rate rate(10);
     while(ros::ok() && current_state_.connected){
@@ -128,26 +131,40 @@ void TrajFSM::stateCallback(const mavros_msgs::StateConstPtr &msg) {
     current_state_ = *msg;
 }
 
+void TrajFSM::extendedStateCallback(const mavros_msgs::ExtendedStateConstPtr &msg)
+{
+    extended_state_ = *msg;
+}
+
 void TrajFSM::quadCmdCallback(const quadrotor_msgs::PositionCommandConstPtr &msg)
 {
     quad_command_ = *msg;
     has_quad_cmd_ = true;
 
-    static ros::Time time_last = ros::Time::now();
+    //static ros::Time time_last = ros::Time::now();
+    // 
     
-    if((ros::Time::now() - time_last).toSec() > 0.5)
-    {
-        has_quad_cmd_ = false;
-    }
-    time_last = ros::Time::now();
+    time_quad_cmd_ = ros::Time::now();
 }
+
+// Keyboard control 
+// A: start mission, take off
+// d: land
+// g: emergency stop
+// w: start mission
+
 
 void TrajFSM::joyCallback(const std_msgs::StringConstPtr &str) {
     if(str->data == "d" || str->data == "D")
     {
         trigger_ = false;
-        if(exec_state_ == MISSION) changeFSMExecState(EMERGENCY_STOP, "JOY");
-        else changeFSMExecState(LAND, "JOY");
+        changeFSMExecState(LAND, "JOY");
+    }
+    else if(str->data == "g" || str->data == "G")
+    {// take off
+        trigger_ = false;
+        changeFSMExecState(EMERGENCY_STOP, "JOY");
+        //changeFSMExecState(TAKEOFF, "JOY");
     }
     else if(str->data == "a" || str->data == "A")
     {// take off
@@ -262,10 +279,10 @@ void TrajFSM::execFSMCallback(const ros::TimerEvent &e) {
                 changeFSMExecState(LOITER, "FSM");
             }
 
-            if(image_yaw_state_ == 1)
-            {
-                loiter_pos_.pose.orientation = tf::createQuaternionMsgFromYaw(5.0*3.1415926/180.0);
-            }else loiter_pos_.pose.orientation = tf::createQuaternionMsgFromYaw(0);
+            // if(image_yaw_state_ == 1)
+            // {
+            //     loiter_pos_.pose.orientation = tf::createQuaternionMsgFromYaw(5.0*3.1415926/180.0);
+            // }else loiter_pos_.pose.orientation = tf::createQuaternionMsgFromYaw(0);
 
             local_pos_pub_.publish(loiter_pos_);
 
@@ -286,6 +303,10 @@ void TrajFSM::execFSMCallback(const ros::TimerEvent &e) {
             if(flag_emergency_stop_){
                 changeFSMExecState(EMERGENCY_STOP, "FSM");
             }
+
+            if(!has_quad_cmd_){
+                changeFSMExecState(LOITER, "FSM");
+            }
             
             break;
         }
@@ -302,18 +323,29 @@ void TrajFSM::execFSMCallback(const ros::TimerEvent &e) {
         case LAND:
         {
             offbset_mode_.request.custom_mode = "AUTO.LAND";
+            
             if( setmode_client_.call(offbset_mode_) && offbset_mode_.response.mode_sent)
-            {
-                ROS_INFO("land enabled");
+            {                    
+            }
+            if(extended_state_.landed_state == mavros_msgs::ExtendedState::LANDED_STATE_ON_GROUND){
+                trigger_ = false;
+                changeFSMExecState(INIT, "FSM");
             }
             break;
         }
 
     }
+
+    
 }
 
 void TrajFSM::execMission() {
-    
+    // judge if rcv timeout
+    if((ros::Time::now() - time_quad_cmd_).toSec() > 0.5)
+    {
+        has_quad_cmd_ = false;
+        return;
+    }
     //if(!has_quad_cmd_) return;
     local_raw_.header.stamp = ros::Time::now();
     local_raw_.position = quad_command_.position;
