@@ -23,6 +23,7 @@ void TrajFSM::init(ros::NodeHandle &nh) {
     nh.param("offb_fsm/target_y", target_pos_.position.y, 2.5);
     nh.param("offb_fsm/target_z", target_pos_.position.z, 2.0);
     nh.param("offb_fsm/target_yaw", target_yaw_, 0.0);
+    nh.param("takeoff_height", takeoff_height_, 1.0);
 
     ROS_INFO("TEST");
 
